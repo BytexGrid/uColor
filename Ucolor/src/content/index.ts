@@ -1,5 +1,21 @@
+// Add debounce function at the top
+function debounce(func: Function, wait: number) {
+  let timeout: NodeJS.Timeout;
+  return function executedFunction(...args: any[]) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
 let selectedElement: HTMLElement | null = null;
 let isPickerActive = false;
+
+// Add mutation observer
+let mutationObserver: MutationObserver | null = null;
 
 // Add styles for highlighted elements
 const style = document.createElement('style');
@@ -8,8 +24,33 @@ style.textContent = `
     outline: 2px dashed #4CAF50 !important;
     outline-offset: 2px !important;
   }
+  .ucolor-selected {
+    outline: 3px solid #2196F3 !important;
+  }
 `;
 document.head.appendChild(style);
+
+// Add color conversion utilities at the top
+function rgbToHex(color: string): string {
+  // Handle rgb/rgba format
+  const rgb = color.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (rgb) {
+    const r = parseInt(rgb[1]);
+    const g = parseInt(rgb[2]);
+    const b = parseInt(rgb[3]);
+    return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  }
+  // If it's already hex or another format, return as is
+  return color;
+}
+
+function standardizeColor(color: string): string {
+  if (color.startsWith('rgb')) {
+    return rgbToHex(color);
+  }
+  // If it's already hex or another format, return as is
+  return color;
+}
 
 function handleMouseOver(e: MouseEvent) {
   if (!isPickerActive) return;
@@ -43,16 +84,19 @@ function getCurrentElementStyle(element: HTMLElement): { color: string; isGradie
     const match = background.match(/linear-gradient\(((?:\d+)(?:deg))?,\s*((?:rgb\([^)]+\)|#[a-fA-F0-9]{6}|[a-zA-Z]+)),\s*((?:rgb\([^)]+\)|#[a-fA-F0-9]{6}|[a-zA-Z]+))\)/);
     if (match) {
       const [, angle, color1, color2] = match;
+      // Convert colors to hex format
+      const hexColor1 = standardizeColor(color1.trim());
+      const hexColor2 = standardizeColor(color2.trim());
       // Return in a consistent format
       return { 
-        color: `linear-gradient(${angle ? angle : '90deg'}, ${color1.trim()}, ${color2.trim()})`,
+        color: `linear-gradient(${angle ? angle : '90deg'}, ${hexColor1}, ${hexColor2})`,
         isGradient: true 
       };
     }
   }
   
-  // Return solid color
-  return { color: backgroundColor, isGradient: false };
+  // Return solid color in hex format
+  return { color: standardizeColor(backgroundColor), isGradient: false };
 }
 
 // Add persistence mode types at the top
@@ -150,12 +194,12 @@ interface ElementFingerprint {
   enhancedCharacteristics?: EnhancedCharacteristics;
 }
 
-// Update scoring thresholds to reflect new scoring system
+// Add scoring thresholds
 const PERSISTENCE_THRESHOLDS: Record<PersistenceMode, number> = {
-  stable: 120,    // Must match most critical criteria
-  standard: 80,   // Should match important criteria
-  experimental: 50, // Can match some key criteria
-  aggressive: 30   // Matches minimal criteria
+  stable: 70,
+  standard: 40,
+  experimental: 25,
+  aggressive: 15
 };
 
 interface ColorChange {
@@ -389,119 +433,158 @@ function getElementFingerprint(element: HTMLElement): ElementFingerprint {
   return fingerprint;
 }
 
-// Update scoreElementMatch with new scoring system
+// Update scoreElementMatch to include new scoring criteria for aggressive mode
 function scoreElementMatch(fingerprint: ElementFingerprint, element: HTMLElement): number {
   let score = 0;
   const elementFingerprint = getElementFingerprint(element);
-
-  // 1. Structural Anchors (40 points)
-  if (fingerprint.elementStructure && elementFingerprint.elementStructure) {
-    const fs = fingerprint.elementStructure;
-    const es = elementFingerprint.elementStructure;
-    
-    // Direct landmark parent matches
-    if ((fs.inHeader && es.inHeader) || 
-        (fs.inNav && es.inNav) || 
-        (fs.inMain && es.inMain) || 
-        (fs.inAside && es.inAside) || 
-        (fs.inFooter && es.inFooter)) {
-      score += 20;
-    }
-
-    // Position relative to landmarks
-    if (fingerprint.domTreeContext && elementFingerprint.domTreeContext) {
-      const fd = fingerprint.domTreeContext;
-      const ed = elementFingerprint.domTreeContext;
-      
-      // Check distances to landmarks
-      let landmarkDistanceMatch = true;
-      for (const landmark of ['header', 'nav', 'main', 'aside', 'footer'] as const) {
-        if (fd.nearestLandmarks[landmark] !== undefined && 
-            ed.nearestLandmarks[landmark] !== undefined) {
-          if (fd.nearestLandmarks[landmark] !== ed.nearestLandmarks[landmark]) {
-            landmarkDistanceMatch = false;
-          }
-        }
-      }
-      if (landmarkDistanceMatch) score += 20;
-    }
+  
+  // Perfect text content match (40 points)
+  if (fingerprint.textContent && fingerprint.textContent === elementFingerprint.textContent) {
+    score += 40;
+  } 
+  // Partial text content match (20 points)
+  else if (fingerprint.textContent && elementFingerprint.textContent.includes(fingerprint.textContent)) {
+    score += 20;
   }
-
-  // 2. Interactive Identity (35 points)
-  if (fingerprint.enhancedCharacteristics && elementFingerprint.enhancedCharacteristics) {
-    const fc = fingerprint.enhancedCharacteristics;
-    const ec = elementFingerprint.enhancedCharacteristics;
-    
-    // Role and ARIA
-    if (fingerprint.role === elementFingerprint.role) score += 15;
-    if (fingerprint.ariaLabel === elementFingerprint.ariaLabel) score += 10;
-    if (JSON.stringify(fc.ariaAttributes) === JSON.stringify(ec.ariaAttributes)) score += 10;
-    
-    // Interactive behavior
-    if (fc.interactiveType === ec.interactiveType) score += 15;
-    if (fc.hasEventListeners === ec.hasEventListeners) score += 10;
-    if (fc.isClickable === ec.isClickable) score += 10;
+  // Structural text match for aggressive mode (10 points)
+  else if (fingerprint.textContent && 
+           elementFingerprint.textContent.length > 0 && 
+           (fingerprint.persistenceMode === 'aggressive' || fingerprint.persistenceMode === 'experimental')) {
+    score += 10;
   }
-
-  // 3. Visual Signature (30 points)
-  if (fingerprint.visualLayout && elementFingerprint.visualLayout) {
-    const vl = fingerprint.visualLayout;
-    const el = elementFingerprint.visualLayout;
-    
-    // Layout context
-    if (vl.isInFlexContainer === el.isInFlexContainer) score += 10;
-    if (vl.isInGridContainer === el.isInGridContainer) score += 10;
-    if (Math.abs(vl.relativeSize.toParent - el.relativeSize.toParent) < 0.1) score += 10;
-    
-    // Style patterns
-    if (fingerprint.enhancedCharacteristics?.computedStylesHash === 
-        elementFingerprint.enhancedCharacteristics?.computedStylesHash) {
-      score += 15;
-    }
-    if (vl.marginPattern === el.marginPattern) score += 10;
-    if (vl.paddingPattern === el.paddingPattern) score += 5;
-  }
-
-  // 4. Content Identity (25 points)
-  if (fingerprint.textContent && elementFingerprint.textContent) {
-    if (fingerprint.textContent === elementFingerprint.textContent) {
-      score += 25;
-    } else if (elementFingerprint.textContent.includes(fingerprint.textContent)) {
-      score += 15;
-    } else if (fingerprint.textContent.length > 0 && 
-               elementFingerprint.textContent.length > 0 && 
-               fingerprint.textContent.length === elementFingerprint.textContent.length) {
-      score += 10;
-    }
-  }
-
-  // 5. Element Properties (20 points)
-  if (fingerprint.tagName === elementFingerprint.tagName) score += 10;
-  if (fingerprint.href === elementFingerprint.href) score += 10;
-  if (fingerprint.src === elementFingerprint.src) score += 10;
-  if (fingerprint.alt === elementFingerprint.alt) score += 5;
-
-  // 6. DOM Position (15 points)
-  if (fingerprint.domTreeContext && elementFingerprint.domTreeContext) {
-    const fd = fingerprint.domTreeContext;
-    const ed = elementFingerprint.domTreeContext;
-    
-    if (fd.siblingCount === ed.siblingCount) score += 8;
-    if (fd.similarSiblingsCount === ed.similarSiblingsCount) score += 7;
-    if (fd.depthFromRoot === ed.depthFromRoot) score += 8;
-    
-    // Parent context through text
-    if (fingerprint.parentText === elementFingerprint.parentText) score += 7;
-  }
-
-  // 7. Class-based Identity (15 points)
-  const commonClasses = fingerprint.classes.filter(c => 
-    elementFingerprint.classes.includes(c)
-  );
-  if (commonClasses.length === fingerprint.classes.length) {
+  
+  // Tag name match (15 points)
+  if (fingerprint.tagName === elementFingerprint.tagName) {
     score += 15;
-  } else if (commonClasses.length > 0) {
-    score += Math.min(10, commonClasses.length * 2);
+  }
+  
+  // Attributes match (15 points total)
+  if (fingerprint.href && fingerprint.href === elementFingerprint.href) score += 5;
+  if (fingerprint.src && fingerprint.src === elementFingerprint.src) score += 5;
+  if (fingerprint.alt && fingerprint.alt === elementFingerprint.alt) score += 2;
+  if (fingerprint.ariaLabel && fingerprint.ariaLabel === elementFingerprint.ariaLabel) score += 3;
+  
+  // Similar dimensions (10 points)
+  const dimensionDiff = Math.abs(fingerprint.dimensions.width - elementFingerprint.dimensions.width) +
+                       Math.abs(fingerprint.dimensions.height - elementFingerprint.dimensions.height);
+  if (dimensionDiff < 5) score += 10;
+  else if (dimensionDiff < 20) score += 5;
+  // Looser dimension matching for experimental/aggressive modes
+  else if (dimensionDiff < 50 && 
+           (fingerprint.persistenceMode === 'aggressive' || fingerprint.persistenceMode === 'experimental')) {
+    score += 3;
+  }
+  
+  // Parent text match (10 points)
+  if (fingerprint.parentText && fingerprint.parentText === elementFingerprint.parentText) {
+    score += 10;
+  }
+  // Partial parent text match for experimental/aggressive modes
+  else if (fingerprint.parentText && 
+           elementFingerprint.parentText.includes(fingerprint.parentText) &&
+           (fingerprint.persistenceMode === 'aggressive' || fingerprint.persistenceMode === 'experimental')) {
+    score += 5;
+  }
+  
+  // Class matches (10 points)
+  const commonClasses = fingerprint.classes.filter(c => elementFingerprint.classes.includes(c));
+  const classScore = Math.min(10, commonClasses.length * 2);
+  score += classScore;
+  
+  // For aggressive mode, give bonus points for partial class matches
+  if (fingerprint.persistenceMode === 'aggressive' && fingerprint.classes.length > 0) {
+    const partialClassMatches = fingerprint.classes.filter(c => 
+      elementFingerprint.classes.some(ec => ec.includes(c) || c.includes(ec))
+    );
+    score += Math.min(5, partialClassMatches.length);
+  }
+  
+  // Add enhanced scoring for aggressive mode only
+  if (fingerprint.persistenceMode === 'aggressive') {
+    // Viewport position scoring (10 points)
+    if (fingerprint.viewportPosition && elementFingerprint.viewportPosition) {
+      const vpf = fingerprint.viewportPosition;
+      const vpe = elementFingerprint.viewportPosition;
+      
+      if (Math.abs(vpf.relativePosition.fromTop - vpe.relativePosition.fromTop) < 0.3 &&
+          Math.abs(vpf.relativePosition.fromLeft - vpe.relativePosition.fromLeft) < 0.3) {
+        score += 10;
+      }
+    }
+
+    // Visual characteristics scoring (10 points)
+    if (fingerprint.visualCharacteristics && elementFingerprint.visualCharacteristics) {
+      const vcf = fingerprint.visualCharacteristics;
+      const vce = elementFingerprint.visualCharacteristics;
+      
+      if (vcf.fontSize === vce.fontSize) score += 2;
+      if (vcf.textAlign === vce.textAlign) score += 2;
+      if (vcf.display === vce.display) score += 2;
+      if (vcf.isVisible === vce.isVisible) score += 4;
+    }
+
+    // Element structure scoring (10 points)
+    if (fingerprint.elementStructure && elementFingerprint.elementStructure) {
+      const esf = fingerprint.elementStructure;
+      const ese = elementFingerprint.elementStructure;
+      
+      // Similar position among siblings (5 points)
+      if (Math.abs(esf.relativePositionInParent - ese.relativePositionInParent) < 0.2) {
+        score += 5;
+      }
+
+      // Semantic section matching (5 points)
+      if ((esf.inHeader && ese.inHeader) ||
+          (esf.inFooter && ese.inFooter) ||
+          (esf.inNav && ese.inNav) ||
+          (esf.inMain && ese.inMain) ||
+          (esf.inAside && ese.inAside)) {
+        score += 5;
+      }
+    }
+
+    // DOM tree context scoring (10 points)
+    if (fingerprint.domTreeContext && elementFingerprint.domTreeContext) {
+      const dtc = fingerprint.domTreeContext;
+      const etc = elementFingerprint.domTreeContext;
+      
+      if (dtc.depthFromRoot === etc.depthFromRoot) score += 2;
+      if (dtc.siblingCount === etc.siblingCount) score += 2;
+      if (dtc.similarSiblingsCount === etc.similarSiblingsCount) score += 2;
+      if (dtc.nearestLandmarks.header === etc.nearestLandmarks.header) score += 2;
+      if (dtc.nearestLandmarks.nav === etc.nearestLandmarks.nav) score += 2;
+      if (dtc.nearestLandmarks.main === etc.nearestLandmarks.main) score += 2;
+      if (dtc.nearestLandmarks.aside === etc.nearestLandmarks.aside) score += 2;
+      if (dtc.nearestLandmarks.footer === etc.nearestLandmarks.footer) score += 2;
+    }
+
+    // Visual layout scoring (10 points)
+    if (fingerprint.visualLayout && elementFingerprint.visualLayout) {
+      const vlf = fingerprint.visualLayout;
+      const vle = elementFingerprint.visualLayout;
+      
+      if (vlf.zIndex === vle.zIndex) score += 2;
+      if (vlf.stackingContext === vle.stackingContext) score += 2;
+      if (vlf.marginPattern === vle.marginPattern) score += 2;
+      if (vlf.paddingPattern === vle.paddingPattern) score += 2;
+      if (vlf.isInFlexContainer === vle.isInFlexContainer) score += 2;
+      if (vlf.isInGridContainer === vle.isInGridContainer) score += 2;
+      if (vlf.relativeSize.toParent === vle.relativeSize.toParent) score += 2;
+      if (vlf.relativeSize.toViewport === vle.relativeSize.toViewport) score += 2;
+    }
+
+    // Enhanced characteristics scoring (10 points)
+    if (fingerprint.enhancedCharacteristics && elementFingerprint.enhancedCharacteristics) {
+      const ecf = fingerprint.enhancedCharacteristics;
+      const ece = elementFingerprint.enhancedCharacteristics;
+      
+      if (ecf.computedStylesHash === ece.computedStylesHash) score += 2;
+      if (ecf.hasEventListeners === ece.hasEventListeners) score += 2;
+      if (ecf.ariaAttributes.size === ece.ariaAttributes.size) score += 2;
+      if (ecf.dataAttributes.size === ece.dataAttributes.size) score += 2;
+      if (ecf.interactiveType === ece.interactiveType) score += 2;
+      if (ecf.isClickable === ece.isClickable) score += 2;
+    }
   }
 
   return score;
@@ -526,6 +609,76 @@ function findElementByFingerprint(fingerprint: ElementFingerprint): HTMLElement 
   return bestScore >= threshold ? bestMatch : null;
 }
 
+// Debounced version of reapplyStyles
+const debouncedReapplyStyles = debounce(reapplyStyles, 250);
+
+// More selective mutation observer
+function setupMutationObserver() {
+  if (mutationObserver) mutationObserver.disconnect();
+
+  mutationObserver = new MutationObserver((mutations) => {
+    let shouldReapply = false;
+    
+    for (const mutation of mutations) {
+      // Only care about style/class changes on elements with our UID
+      if (mutation.type === 'attributes') {
+        const target = mutation.target as HTMLElement;
+        if (target.hasAttribute('data-ucolor-uid')) {
+          shouldReapply = true;
+          break;
+        }
+      }
+      // Or new elements being added
+      else if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+        shouldReapply = true;
+        break;
+      }
+    }
+
+    if (shouldReapply) {
+      debouncedReapplyStyles();
+    }
+  });
+
+  // More specific attribute filtering
+  mutationObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style', 'class'] // Only watch style and class changes
+  });
+}
+
+// Add reapplyStyles function
+function reapplyStyles() {
+  chrome.storage.local.get('colorChanges', (result) => {
+    const changes: StorageData = result.colorChanges || {};
+    const url = getCurrentUrl();
+    const urlChanges = changes[url] || [];
+    
+    urlChanges.forEach(change => {
+      try {
+        const element = findElementByFingerprint(change.fingerprint);
+        if (element) {
+          const color = change.isGradient ? 
+            `linear-gradient(${change.color})` : 
+            change.color;
+          element.style.background = color;
+          
+          // Add UID if missing
+          if (!element.getAttribute('data-ucolor-uid')) {
+            const uid = generateUniqueId();
+            element.setAttribute('data-ucolor-uid', uid);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to reapply style:', error);
+      }
+    });
+  });
+}
+
+// Update handleClick function
 function handleClick(e: MouseEvent) {
   if (!isPickerActive) return;
   
@@ -539,11 +692,20 @@ function handleClick(e: MouseEvent) {
     el.classList.remove('ucolor-hover')
   );
   
+  // Add selected class
+  selectedElement.classList.add('ucolor-selected');
+  
   // Get the current style and fingerprint
   const currentStyle = getCurrentElementStyle(selectedElement);
   const fingerprint = getElementFingerprint(selectedElement);
   
-  // Send message to popup with element info and color
+  // Ensure element has a UID
+  if (!selectedElement.getAttribute('data-ucolor-uid')) {
+    const uid = generateUniqueId();
+    selectedElement.setAttribute('data-ucolor-uid', uid);
+  }
+  
+  // Send message to popup with element info
   chrome.runtime.sendMessage({
     type: 'ELEMENT_SELECTED',
     elementInfo: {
@@ -578,12 +740,14 @@ function getElementPath(element: HTMLElement): string {
   return path.join(' > ');
 }
 
+// Add event listeners after function definitions
 function activateElementPicker() {
   isPickerActive = true;
   document.body.style.cursor = 'crosshair';
   document.addEventListener('mouseover', handleMouseOver);
   document.addEventListener('mouseout', handleMouseOut);
   document.addEventListener('click', handleClick);
+  setupMutationObserver();
 }
 
 function deactivateElementPicker() {
@@ -592,6 +756,12 @@ function deactivateElementPicker() {
   document.removeEventListener('mouseover', handleMouseOver);
   document.removeEventListener('mouseout', handleMouseOut);
   document.removeEventListener('click', handleClick);
+  if (mutationObserver) {
+    mutationObserver.disconnect();
+  }
+  if (selectedElement) {
+    selectedElement.classList.remove('ucolor-selected');
+  }
 }
 
 // Get current URL without query parameters
@@ -607,11 +777,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
     case 'APPLY_COLOR':
       if (selectedElement && message.color) {
-        const color = message.isGradient ? 
-          `linear-gradient(${message.color})` : 
-          message.color;
+        let color = message.color;
+        if (!message.isGradient) {
+          color = standardizeColor(message.color);
+        } else {
+          // For gradients, convert each color in the gradient
+          const gradientMatch = color.match(/(.*?)((?:rgb\([^)]+\)|#[a-fA-F0-9]{6}|[a-zA-Z]+))(.*?)((?:rgb\([^)]+\)|#[a-fA-F0-9]{6}|[a-zA-Z]+))(.*)/);
+          if (gradientMatch) {
+            const [, start, color1, middle, color2, end] = gradientMatch;
+            color = `${start}${standardizeColor(color1)}${middle}${standardizeColor(color2)}${end}`;
+          }
+        }
         
-        selectedElement.style.background = color;
+        selectedElement.style.background = message.isGradient ? 
+          `linear-gradient(${color})` : 
+          color;
         
         // Set persistence mode attribute
         selectedElement.setAttribute('data-ucolor-persistence', message.persistenceMode || 'standard');
@@ -724,32 +904,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // Keep the message channel open for async responses
 });
 
-// Update page load handler
+// Initialize on page load
 chrome.storage.local.get('colorChanges', (result) => {
-  const changes: StorageData = result.colorChanges || {};
-  const url = getCurrentUrl();
-  const urlChanges = changes[url] || [];
-  
-  urlChanges.forEach(change => {
-    try {
-      // Try to find element by fingerprint
-      let element = findElementByFingerprint(change.fingerprint);
-      
-      // If not found, try the path as fallback
-      if (!element) {
-        element = document.querySelector(change.path);
-      }
-      
-      if (element) {
-        const color = change.isGradient ? 
-          `linear-gradient(${change.color})` : 
-          change.color;
-        element.style.background = color;
-      }
-    } catch (e) {
-      console.warn('Failed to apply color to element:', change.fingerprint.textContent);
-    }
-  });
+  reapplyStyles();
+  setupMutationObserver();
 });
 
 // Update isMatchingElement to use persistence modes

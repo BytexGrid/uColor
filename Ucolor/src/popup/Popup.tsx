@@ -82,6 +82,35 @@ const parseGradient = (gradientStr: string) => {
   return null;
 };
 
+// Add getMostUsedColor function after the existing interfaces
+function getMostUsedColor(): Promise<string> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get('colorChanges', (result) => {
+      const changes: StorageData = result.colorChanges || {};
+      const allChanges: ColorChange[] = Object.values(changes)
+        .flat()
+        .filter(change => !change.isGradient);
+      
+      const colorCount: Record<string, number> = {};
+      allChanges.forEach(change => {
+        colorCount[change.color] = (colorCount[change.color] || 0) + 1;
+      });
+
+      let mostUsedColor = '#000000';
+      let maxCount = 0;
+
+      Object.entries(colorCount).forEach(([color, count]) => {
+        if (count > maxCount) {
+          maxCount = count;
+          mostUsedColor = color;
+        }
+      });
+
+      resolve(mostUsedColor);
+    });
+  });
+}
+
 const Popup: React.FC = () => {
   const [selectedColor, setSelectedColor] = useState('#000000');
   const [isSelecting, setIsSelecting] = useState(false);
@@ -249,6 +278,13 @@ const Popup: React.FC = () => {
       setGradientStop2('#ffffff');
     }
   };
+
+  // Add useEffect to set the most used color as default
+  useEffect(() => {
+    getMostUsedColor().then(color => {
+      setSelectedColor(color);
+    });
+  }, []); // Empty dependency array means this runs once when component mounts
 
   return (
     <div className="popup">
